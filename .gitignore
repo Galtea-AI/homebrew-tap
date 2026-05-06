@@ -1,0 +1,13 @@
+# Local staging area for downloaded release assets (never committed)
+staging/
+
+# Bottles live as assets on GitHub Releases of this repo, not in git.
+# See cli/adr/0019 in the source monorepo. Keeping this here so a stray
+# `cp` into the repo doesn't accidentally inflate it.
+bottles/
+
+# OS / editor noise
+.DS_Store
+*.swp
+# OMC tooling local state
+.omc/

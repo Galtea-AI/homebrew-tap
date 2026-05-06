@@ -1,0 +1,436 @@
+name: 🍺 Sync Homebrew formula
+
+on:
+  # Low-latency trigger fired by the monorepo after a CLI release publishes.
+  repository_dispatch:
+    types: [new-release]
+
+  # Manual trigger with optional flags for full sync and single-release reindex.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '🧨 Wipe Formula + reupload bottles for the latest release'
+        type: boolean
+        default: false
+      version:
+        description: '🎯 Pin to a specific release tag (e.g. 4.21.0). Leave blank for the latest.'
+        type: string
+        required: false
+
+  # Drift catcher — fills any gap if a previous run failed silently.
+  schedule:
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: homebrew-tap-sync
+  cancel-in-progress: false
+
+env:
+  MONOREPO: Galtea-AI/monorepo
+
+jobs:
+  sync:
+    name: 🔄 Sync formula
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout homebrew-tap
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: 🛎️  Trigger context
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          DISPATCH_TYPE: ${{ github.event.action }}
+          INPUT_FORCE: ${{ github.event.inputs.force }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          echo "::group::🛎️  Why am I running?"
+          echo "  • Event:     $EVENT"
+          echo "  • Actor:     $ACTOR"
+          if [ "$EVENT" = "repository_dispatch" ]; then
+            echo "  • Dispatch:  $DISPATCH_TYPE  (likely a fresh CLI release on the monorepo)"
+          elif [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "  • Inputs:    force=${INPUT_FORCE:-false}  version=${INPUT_VERSION:-<none>}"
+          elif [ "$EVENT" = "schedule" ]; then
+            echo "  • Schedule:  daily drift catcher"
+          fi
+          echo "::endgroup::"
+
+      - name: 🎯 Determine target release
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.MONOREPO_READ_TOKEN }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+          VERSION_INPUT: ${{ github.event.inputs.version || '' }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::📡 Listing CLI releases on $MONOREPO"
+          # GoReleaser archives are named galtea_<version>_<os>_<arch>.tar.gz
+          # (see cli/.goreleaser.yaml `archives.name_template`). Pick the
+          # latest release that carries those assets — Homebrew, unlike
+          # apt/yum, only serves one version at a time, so we always
+          # collapse to the most recent.
+          LATEST_TAG=$(gh api "repos/$MONOREPO/releases?per_page=20" --paginate \
+            | jq -r '[.[] | select(.assets[]?.name | test("^galtea_.*_(darwin|linux)_.*\\.tar\\.gz$")) | .tag_name] | first // empty' \
+            || true)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error::No release with galtea_*_<os>_<arch>.tar.gz assets found on $MONOREPO."
+            exit 1
+          fi
+          echo "  • Latest release with darwin/linux tarballs: $LATEST_TAG"
+          echo "::endgroup::"
+
+          if [ "$FORCE" = "true" ]; then
+            MODE="force"
+            EMOJI="🧨"
+            TARGET="$LATEST_TAG"
+            REASON="full rebuild — wiping Formula + reuploading bottles for $TARGET"
+          elif [ -n "$VERSION_INPUT" ]; then
+            MODE="version"
+            EMOJI="🎯"
+            TARGET="$VERSION_INPUT"
+            REASON="pinned to user-supplied tag"
+          else
+            MODE="incremental"
+            EMOJI="➕"
+            TARGET="$LATEST_TAG"
+            REASON="incremental — re-render only if the active formula doesn't already point at $TARGET"
+          fi
+
+          # Strip a leading `v` for the version baked into filenames /
+          # the formula's `version "..."` field. Both `vX.Y.Z` and bare
+          # `X.Y.Z` tag forms are accepted upstream (see monorepo
+          # cli/adr/0017-monorepo-version-train.md), so this strip is a
+          # no-op on bare tags.
+          VERSION="${TARGET#v}"
+
+          # Source-of-truth for "is this version already published?" is
+          # .ingested-tags. Mirrors the linux-packages pattern; the file
+          # holds at most one line here because Homebrew only serves one
+          # version. Empty file = pristine repo.
+          ALREADY_PUBLISHED="false"
+          if [ "$MODE" = "incremental" ] && grep -qxF "$TARGET" .ingested-tags 2>/dev/null; then
+            ALREADY_PUBLISHED="true"
+          fi
+
+          {
+            echo "mode=$MODE"
+            echo "emoji=$EMOJI"
+            echo "target=$TARGET"
+            echo "version=$VERSION"
+            echo "already_published=$ALREADY_PUBLISHED"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::group::$EMOJI Plan"
+          echo "  • Mode:     $MODE"
+          echo "  • Reason:   $REASON"
+          echo "  • Target:   $TARGET (version $VERSION)"
+          echo "  • Skip?     $ALREADY_PUBLISHED"
+          echo "::endgroup::"
+
+      - name: 🟰 Skip — already published
+        if: steps.target.outputs.already_published == 'true'
+        run: |
+          echo "::notice::Active formula already points at ${{ steps.target.outputs.target }} — nothing to do."
+
+      - name: 🧹 Force mode — wipe Formula + .ingested-tags
+        if: steps.target.outputs.mode == 'force'
+        run: |
+          echo "::group::🧹 Wiping Formula/galtea.rb + .ingested-tags"
+          # Note: bottles live as assets on a GitHub Release of this repo
+          # (NOT in `bottles/` anymore — see ADR cli/adr/0019). The release
+          # is overwritten in the publish step below via `gh release upload
+          # --clobber`, so there's nothing else to wipe here.
+          rm -f Formula/galtea.rb
+          rm -f .ingested-tags
+          mkdir -p Formula
+          echo "::endgroup::"
+
+      - name: ⬇️  Download tarballs from monorepo
+        if: steps.target.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MONOREPO_READ_TOKEN }}
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          set -euo pipefail
+          rm -rf staging
+          mkdir -p staging
+
+          echo "::group::⬇️  Downloading darwin/linux tarballs + checksums.txt for $TARGET"
+          gh release download "$TARGET" -R "$MONOREPO" \
+            --pattern 'galtea_*_darwin_*.tar.gz' \
+            --pattern 'galtea_*_linux_*.tar.gz' \
+            --pattern 'checksums.txt' \
+            --dir staging \
+            --clobber
+          ls -la staging/ | sed 's/^/      /'
+          echo "::endgroup::"
+
+          # Sanity-check: we expect exactly the four {darwin,linux}×{amd64,arm64}
+          # tarballs plus checksums.txt. Anything else means GoReleaser's
+          # archive matrix changed and the formula template below would
+          # render an incomplete/incorrect formula. Fail loudly so the
+          # release isn't published broken.
+          for combo in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            if ! ls staging/galtea_*_${combo}.tar.gz >/dev/null 2>&1; then
+              echo "::error::Missing tarball for $combo on $TARGET"
+              exit 1
+            fi
+          done
+          if [ ! -s staging/checksums.txt ]; then
+            echo "::error::checksums.txt missing or empty on $TARGET"
+            exit 1
+          fi
+
+      - name: 🪣 Publish bottles to a GitHub Release of this repo
+        if: steps.target.outputs.already_published != 'true'
+        env:
+          # Use the workflow's default token to write to *this* repo. No
+          # MONOREPO_READ_TOKEN here — that one only has read access to
+          # the source monorepo.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ steps.target.outputs.target }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Bottles live as assets on a GitHub Release of THIS repo
+          # (Galtea-AI/homebrew-tap), not committed to git. Two reasons:
+          #   1) Repo Git size stays tiny (~50 KB) regardless of release
+          #      count. `brew tap` clone is sub-second.
+          #   2) GitHub's release-asset CDN is built for binaries; Pages
+          #      can serve them but it's the wrong tool.
+          # The release tag matches the monorepo tag exactly (e.g. 4.24.6
+          # or v4.24.6) for traceability. See ADR cli/adr/0019.
+          OWNER_REPO="${GITHUB_REPOSITORY:-Galtea-AI/homebrew-tap}"
+
+          echo "::group::🪣 Publishing 4 bottles as assets on $OWNER_REPO@$TARGET"
+          if gh release view "$TARGET" -R "$OWNER_REPO" >/dev/null 2>&1; then
+            echo "  • Release $TARGET already exists — clobbering its 4 bottle assets"
+            gh release upload "$TARGET" -R "$OWNER_REPO" \
+              --clobber \
+              staging/galtea_*_darwin_*.tar.gz \
+              staging/galtea_*_linux_*.tar.gz
+          else
+            echo "  • Creating release $TARGET on $OWNER_REPO"
+            NOTES_FILE=$(mktemp)
+            cat > "$NOTES_FILE" <<MD
+          Automated mirror of Galtea CLI bottles for Homebrew.
+
+          Source release: [Galtea-AI/monorepo@$TARGET](https://github.com/Galtea-AI/monorepo/releases/tag/$TARGET) (private).
+
+          These tarballs are the GoReleaser-produced \`galtea_${VERSION}_<os>_<arch>.tar.gz\` archives, mirrored here so \`brew install\` can fetch them publicly. The Homebrew formula in \`Formula/galtea.rb\` references them by URL + SHA256.
+
+          Do not edit this release manually — \`.github/workflows/sync.yml\` regenerates it on every CLI release on the source monorepo.
+          MD
+            gh release create "$TARGET" -R "$OWNER_REPO" \
+              --title "galtea $TARGET" \
+              --notes-file "$NOTES_FILE" \
+              staging/galtea_*_darwin_*.tar.gz \
+              staging/galtea_*_linux_*.tar.gz
+            rm -f "$NOTES_FILE"
+          fi
+          echo "  ✔  Bottles published: https://github.com/$OWNER_REPO/releases/tag/$TARGET"
+          echo "::endgroup::"
+
+      - name: 🧮 Extract SHA256 checksums
+        if: steps.target.outputs.already_published != 'true'
+        id: sha
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+          # checksums.txt format (GoReleaser default):
+          #   <sha256>  galtea_<version>_<os>_<arch>.tar.gz
+          extract() {
+            local arch_combo="$1"
+            local sum
+            sum=$(awk -v pat="galtea_${VERSION}_${arch_combo}.tar.gz" \
+              '$2 == pat { print $1; exit }' staging/checksums.txt || true)
+            if [ -z "$sum" ]; then
+              echo "::error::Could not find checksum for galtea_${VERSION}_${arch_combo}.tar.gz in checksums.txt"
+              exit 1
+            fi
+            echo "$sum"
+          }
+
+          SHA_DARWIN_AMD64=$(extract darwin_amd64)
+          SHA_DARWIN_ARM64=$(extract darwin_arm64)
+          SHA_LINUX_AMD64=$(extract linux_amd64)
+          SHA_LINUX_ARM64=$(extract linux_arm64)
+
+          {
+            echo "darwin_amd64=$SHA_DARWIN_AMD64"
+            echo "darwin_arm64=$SHA_DARWIN_ARM64"
+            echo "linux_amd64=$SHA_LINUX_AMD64"
+            echo "linux_arm64=$SHA_LINUX_ARM64"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::group::🧮 SHA256 checksums"
+          echo "  • darwin_amd64: $SHA_DARWIN_AMD64"
+          echo "  • darwin_arm64: $SHA_DARWIN_ARM64"
+          echo "  • linux_amd64:  $SHA_LINUX_AMD64"
+          echo "  • linux_arm64:  $SHA_LINUX_ARM64"
+          echo "::endgroup::"
+
+      - name: 📝 Render Formula/galtea.rb
+        if: steps.target.outputs.already_published != 'true'
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+          VERSION: ${{ steps.target.outputs.version }}
+          SHA_DARWIN_AMD64: ${{ steps.sha.outputs.darwin_amd64 }}
+          SHA_DARWIN_ARM64: ${{ steps.sha.outputs.darwin_arm64 }}
+          SHA_LINUX_AMD64: ${{ steps.sha.outputs.linux_amd64 }}
+          SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
+          OWNER_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p Formula
+          # URLs point at this repo's release-asset CDN
+          # (https://github.com/<owner>/<repo>/releases/download/<tag>/<file>),
+          # which is public regardless of source-monorepo visibility. See
+          # ADR cli/adr/0019 in the monorepo for the rationale.
+          BASE_URL="https://github.com/${OWNER_REPO}/releases/download/${TARGET}"
+          cat > Formula/galtea.rb <<RUBY
+          # typed: false
+          # frozen_string_literal: true
+
+          # This file is generated by .github/workflows/sync.yml. DO NOT EDIT.
+          class Galtea < Formula
+            desc "Galtea CLI - terminal-native client for the Galtea AI testing & evaluation platform"
+            homepage "https://galtea.ai"
+            version "${VERSION}"
+            license "Apache-2.0"
+
+            on_macos do
+              if Hardware::CPU.intel?
+                url "${BASE_URL}/galtea_${VERSION}_darwin_amd64.tar.gz"
+                sha256 "${SHA_DARWIN_AMD64}"
+
+                def install
+                  bin.install "galtea"
+                end
+              end
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/galtea_${VERSION}_darwin_arm64.tar.gz"
+                sha256 "${SHA_DARWIN_ARM64}"
+
+                def install
+                  bin.install "galtea"
+                end
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
+                url "${BASE_URL}/galtea_${VERSION}_linux_amd64.tar.gz"
+                sha256 "${SHA_LINUX_AMD64}"
+
+                def install
+                  bin.install "galtea"
+                end
+              end
+              if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
+                url "${BASE_URL}/galtea_${VERSION}_linux_arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+
+                def install
+                  bin.install "galtea"
+                end
+              end
+            end
+
+            test do
+              system "#{bin}/galtea", "--version"
+            end
+          end
+          RUBY
+
+          # The heredoc above is indented to match the YAML step body;
+          # strip those leading spaces so the resulting .rb is flush-left.
+          sed -i 's/^          //' Formula/galtea.rb
+
+          echo "::group::📝 Rendered Formula/galtea.rb"
+          sed 's/^/      /' Formula/galtea.rb
+          echo "::endgroup::"
+
+      - name: 📌 Update .ingested-tags
+        if: steps.target.outputs.already_published != 'true'
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          # Single-line manifest — overwrite, not append. Homebrew only
+          # serves one version at a time so the historical-list pattern
+          # of linux-packages doesn't apply here. The file's value is as
+          # an idempotency anchor: incremental runs read it to skip when
+          # the active formula already points at the latest release.
+          echo "$TARGET" > .ingested-tags
+          echo "::group::📌 .ingested-tags now"
+          sed 's/^/      /' .ingested-tags
+          echo "::endgroup::"
+
+      - name: 🚀 Commit and push
+        id: commit
+        if: steps.target.outputs.already_published != 'true'
+        run: |
+          set -euo pipefail
+          git config user.name 'galtea-release-bot'
+          git config user.email 'noreply@galtea.ai'
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "::group::🟰 No changes to commit"
+            echo "  • Workflow ran but produced no Formula diff (e.g. re-render with identical bytes)."
+            echo "  • Bottles may still have been republished on the GitHub Release — that's a no-op when SHA256s match."
+            echo "::endgroup::"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MODE="${{ steps.target.outputs.mode }}"
+          EMOJI="${{ steps.target.outputs.emoji }}"
+          TARGET="${{ steps.target.outputs.target }}"
+          MSG="$EMOJI sync($MODE): galtea $TARGET"
+
+          echo "::group::📊 Diff summary"
+          git diff --cached --stat | tail -20 | sed 's/^/      /'
+          echo "::endgroup::"
+
+          echo "::group::🚀 Committing and pushing"
+          echo "  • Message: $MSG"
+          git commit -m "$MSG"
+          git push
+          echo "  ✔  Pushed to main"
+          echo "::endgroup::"
+
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: 🏁 Run summary
+        if: always()
+        env:
+          MODE: ${{ steps.target.outputs.mode }}
+          EMOJI: ${{ steps.target.outputs.emoji }}
+          TARGET: ${{ steps.target.outputs.target }}
+          VERSION: ${{ steps.target.outputs.version }}
+          SKIPPED: ${{ steps.target.outputs.already_published }}
+          PUSHED: ${{ steps.commit.outputs.pushed }}
+          OWNER_REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "## ${EMOJI:-🟰} Sync run summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Mode | \`${MODE:-no-op}\` |"
+            echo "| Target | \`${TARGET:-<none>}\` |"
+            echo "| Version | \`${VERSION:-<none>}\` |"
+            echo "| Already published | \`${SKIPPED:-false}\` |"
+            echo "| Formula commit pushed | \`${PUSHED:-false}\` |"
+            echo "| Bottles release | <https://github.com/${OWNER_REPO}/releases/tag/${TARGET:-<none>}> |"
+            echo "| Tap landing | <https://brew.galtea.ai> |"
+          } >> "$GITHUB_STEP_SUMMARY"
