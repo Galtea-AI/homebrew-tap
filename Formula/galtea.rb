@@ -5,21 +5,21 @@
 class Galtea < Formula
   desc "Galtea CLI - terminal-native client for the Galtea AI testing & evaluation platform"
   homepage "https://galtea.ai"
-  version "4.41.0"
+  version "4.42.0"
   license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.41.0/galtea_4.41.0_darwin_amd64.tar.gz"
-      sha256 "a1d25423ffd5bc4bf84da82901e8b24e7bfaf2364fefca65b1f105a31de44040"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.42.0/galtea_4.42.0_darwin_amd64.tar.gz"
+      sha256 "ad1b80ff995a5c5810cc144d3877125d3a64ee44d9c4d7047186c9038087cf56"
 
       def install
         bin.install "galtea"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.41.0/galtea_4.41.0_darwin_arm64.tar.gz"
-      sha256 "adbd58dfa0a62d53257c597627d0b880c1041903e9c00b782f67a9bc21fd8b71"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.42.0/galtea_4.42.0_darwin_arm64.tar.gz"
+      sha256 "fa6fc77c09b85f3dd0af33ae211b062c3219321a452e3eea222ade20e7602919"
 
       def install
         bin.install "galtea"
@@ -29,16 +29,16 @@ class Galtea < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.41.0/galtea_4.41.0_linux_amd64.tar.gz"
-      sha256 "4a6bcaa5ef0770f8c6355d4bd7be6da0c94ef6406a459912d49aad724d94a267"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.42.0/galtea_4.42.0_linux_amd64.tar.gz"
+      sha256 "7429baa3c4c447a04e8b30cdfc17e80c7dd98fb5bd9edbaa6dbc140e0b4dc2e9"
 
       def install
         bin.install "galtea"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.41.0/galtea_4.41.0_linux_arm64.tar.gz"
-      sha256 "ee99cd6e3daf7493363883ea127158514b31575f7e9d9d0210301cbdfe2fae78"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/4.42.0/galtea_4.42.0_linux_arm64.tar.gz"
+      sha256 "273d288a447ad65f22918bb84c8492c42af978b0e0a9e25bb11167ca0309cfb8"
 
       def install
         bin.install "galtea"
