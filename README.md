@@ -27,6 +27,17 @@ brew update
 brew upgrade galtea
 ```
 
+## Install an older version
+
+Each minor version has its own formula, which installs the newest patch of that minor:
+
+```bash
+brew search galtea-ai/tap/galtea@               # list the versions
+brew install galtea-ai/tap/galtea@5.4
+```
+
+`brew upgrade` then moves `galtea@5.4` to new 5.4.x patches only. The formulas all install the same `galtea` command, so uninstall one before you install another.
+
 ## Uninstall
 
 ```bash
@@ -36,14 +47,14 @@ brew untap galtea-ai/tap   # optional — only if you want to drop the tap entir
 
 ## How this tap works
 
-This repository is auto-maintained — **don't edit `Formula/galtea.rb` by hand**.
+This repository is auto-maintained — **don't edit the files in `Formula/` by hand**.
 
 Each Galtea CLI release in the [monorepo](https://github.com/Galtea-AI/monorepo) fires a `repository_dispatch` event into this repo. The [`sync.yml`](.github/workflows/sync.yml) workflow then:
 
-1. Downloads the four `galtea_<version>_<os>_<arch>.tar.gz` archives + `checksums.txt` from the source release.
+1. Downloads the four `galtea_<version>_<os>_<arch>.tar.gz` archives + `checksums.txt` from each source release that has no mirror on this tap yet, so a backport patch shipped after a higher release is mirrored too.
 2. Mirrors the four tarballs as **assets on a GitHub Release of this tap** (tag matches the monorepo tag, e.g. [`v4.24.6`](../../releases)). The source monorepo is private; this tap is public, so its release CDN is what `brew install` actually fetches from.
-3. Regenerates [`Formula/galtea.rb`](Formula/galtea.rb) with the new version + four SHA256s + URLs pointing at this tap's release-asset CDN.
-4. Commits the formula update (just `Formula/galtea.rb` + `.ingested-tags` — bottles never touch git).
+3. Regenerates [`Formula/galtea.rb`](Formula/galtea.rb) with the highest version + four SHA256s + URLs pointing at this tap's release-asset CDN, and one `Formula/galtea@<major>.<minor>.rb` per minor version with a release on this tap, for its newest patch. [`scripts/render-formula.sh`](scripts/render-formula.sh) writes each one.
+4. Commits the formula updates (just `Formula/` + `.ingested-tags` — bottles never touch git).
 
 A daily cron also runs the same workflow as a drift catcher in case a dispatch event is ever missed.
 
