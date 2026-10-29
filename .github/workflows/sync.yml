@@ -9,11 +9,11 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: '🧨 Wipe Formula, reupload bottles for the latest release, and render every versioned formula'
+        description: '🧨 Wipe Formula, reupload bottles for the highest release, and render every versioned formula'
         type: boolean
         default: false
       version:
-        description: '🎯 Pin to a specific release tag (e.g. 4.21.0). Leave blank for the latest.'
+        description: '🎯 Mirror one release tag again (e.g. 4.21.0). Formula/galtea.rb still serves the highest release.'
         type: string
         required: false
 
@@ -67,82 +67,84 @@ jobs:
           fi
           echo "::endgroup::"
 
-      - name: 🎯 Determine target release
+      - name: 🎯 Determine the releases to mirror
         id: target
         env:
           GH_TOKEN: ${{ secrets.MONOREPO_READ_TOKEN }}
+          TAP_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
           VERSION_INPUT: ${{ github.event.inputs.version || '' }}
         run: |
           set -euo pipefail
 
+          # Orders tags by version; a leading `v` is ignored.
+          sort_tags() { awk '{ v = $0; sub(/^v/, "", v); print v, $0 }' | sort -V -k1,1 | awk '{ print $2 }'; }
+
           echo "::group::📡 Listing CLI releases on $MONOREPO"
           # GoReleaser archives are named galtea_<version>_<os>_<arch>.tar.gz
-          # (see cli/.goreleaser.yaml `archives.name_template`). Pick the
-          # latest release that carries those assets: Formula/galtea.rb
-          # serves it, and the versioned formulas serve the older ones.
-          LATEST_TAG=$(gh api "repos/$MONOREPO/releases?per_page=20" --paginate \
-            | jq -r '[.[] | select(.assets[]?.name | test("^galtea_.*_(darwin|linux)_.*\\.tar\\.gz$")) | .tag_name] | first // empty' \
-            || true)
+          # (see cli/.goreleaser.yaml `archives.name_template`). The API lists
+          # releases by creation date, and a backport patch can be created
+          # after a higher release, so the order comes from the version.
+          SOURCE_TAGS=$(gh api "repos/$MONOREPO/releases?per_page=100" --paginate \
+            | jq -r '.[] | select(.draft | not) | select(any(.assets[]?; .name | test("^galtea_.*_(darwin|linux)_.*\\.tar\\.gz$"))) | .tag_name' \
+            | sort_tags)
+          LATEST_TAG=$(echo "$SOURCE_TAGS" | tail -1)
           if [ -z "$LATEST_TAG" ]; then
             echo "::error::No release with galtea_*_<os>_<arch>.tar.gz assets found on $MONOREPO."
             exit 1
           fi
-          echo "  • Latest release with darwin/linux tarballs: $LATEST_TAG"
+          MIRRORED_TAGS=$(GH_TOKEN="$TAP_TOKEN" gh release list -R "$OWNER_REPO" --limit 1000 --json tagName --jq '.[].tagName')
+          MISSING_TAGS=$(comm -23 <(echo "$SOURCE_TAGS" | sort) <(echo "$MIRRORED_TAGS" | sort) | sort_tags | xargs)
+          echo "  • Highest release with darwin/linux tarballs: $LATEST_TAG"
+          echo "  • Releases with no mirror on this tap: ${MISSING_TAGS:-<none>}"
           echo "::endgroup::"
 
           if [ "$FORCE" = "true" ]; then
             MODE="force"
             EMOJI="🧨"
-            TARGET="$LATEST_TAG"
-            REASON="full rebuild — wiping Formula + reuploading bottles for $TARGET"
+            MIRROR=$(printf '%s\n' $MISSING_TAGS "$LATEST_TAG" | sort -u | sort_tags | xargs)
+            REASON="full rebuild — wiping Formula + reuploading bottles for $LATEST_TAG"
           elif [ -n "$VERSION_INPUT" ]; then
             MODE="version"
             EMOJI="🎯"
-            TARGET="$VERSION_INPUT"
-            REASON="pinned to user-supplied tag"
+            MIRROR="$VERSION_INPUT"
+            REASON="mirror the user-supplied tag again"
           else
             MODE="incremental"
             EMOJI="➕"
-            TARGET="$LATEST_TAG"
-            REASON="incremental — re-render only if the active formula doesn't already point at $TARGET"
+            MIRROR="$MISSING_TAGS"
+            REASON="incremental — mirror the releases this tap does not have"
           fi
 
-          # Strip a leading `v` for the version baked into filenames /
-          # the formula's `version "..."` field. Both `vX.Y.Z` and bare
-          # `X.Y.Z` tag forms are accepted upstream (see monorepo
-          # cli/adr/0017-monorepo-version-train.md), so this strip is a
-          # no-op on bare tags.
-          VERSION="${TARGET#v}"
-
-          # Source-of-truth for "is this version already published?" is
-          # .ingested-tags. Mirrors the linux-packages pattern; the file
-          # holds one line: the release Formula/galtea.rb points at.
-          # Empty file = pristine repo.
+          # .ingested-tags holds one line: the release Formula/galtea.rb
+          # points at. Nothing to do when every release has a mirror and
+          # that formula already serves the highest one.
           ALREADY_PUBLISHED="false"
-          if [ "$MODE" = "incremental" ] && grep -qxF "$TARGET" .ingested-tags 2>/dev/null; then
+          if [ "$MODE" = "incremental" ] && [ -z "$MIRROR" ] && grep -qxF "$LATEST_TAG" .ingested-tags 2>/dev/null; then
             ALREADY_PUBLISHED="true"
           fi
 
           {
             echo "mode=$MODE"
             echo "emoji=$EMOJI"
-            echo "target=$TARGET"
-            echo "version=$VERSION"
+            echo "latest=$LATEST_TAG"
+            echo "mirror=$MIRROR"
             echo "already_published=$ALREADY_PUBLISHED"
           } >> "$GITHUB_OUTPUT"
 
           echo "::group::$EMOJI Plan"
           echo "  • Mode:     $MODE"
           echo "  • Reason:   $REASON"
-          echo "  • Target:   $TARGET (version $VERSION)"
+          echo "  • Mirror:   ${MIRROR:-<none>}"
+          echo "  • galtea.rb → $LATEST_TAG"
           echo "  • Skip?     $ALREADY_PUBLISHED"
           echo "::endgroup::"
 
       - name: 🟰 Skip — already published
         if: steps.target.outputs.already_published == 'true'
         run: |
-          echo "::notice::Active formula already points at ${{ steps.target.outputs.target }} — nothing to do."
+          echo "::notice::Every release has a mirror and Formula/galtea.rb already points at ${{ steps.target.outputs.latest }} — nothing to do."
 
       - name: 🧹 Force mode — wipe Formula + .ingested-tags
         if: steps.target.outputs.mode == 'force'
@@ -161,37 +163,39 @@ jobs:
         if: steps.target.outputs.already_published != 'true'
         env:
           GH_TOKEN: ${{ secrets.MONOREPO_READ_TOKEN }}
-          TARGET: ${{ steps.target.outputs.target }}
+          MIRROR: ${{ steps.target.outputs.mirror }}
         run: |
           set -euo pipefail
           rm -rf staging
           mkdir -p staging
 
-          echo "::group::⬇️  Downloading darwin/linux tarballs + checksums.txt for $TARGET"
-          gh release download "$TARGET" -R "$MONOREPO" \
-            --pattern 'galtea_*_darwin_*.tar.gz' \
-            --pattern 'galtea_*_linux_*.tar.gz' \
-            --pattern 'checksums.txt' \
-            --dir staging \
-            --clobber
-          ls -la staging/ | sed 's/^/      /'
-          echo "::endgroup::"
+          for TARGET in $MIRROR; do
+            echo "::group::⬇️  Downloading darwin/linux tarballs + checksums.txt for $TARGET"
+            gh release download "$TARGET" -R "$MONOREPO" \
+              --pattern 'galtea_*_darwin_*.tar.gz' \
+              --pattern 'galtea_*_linux_*.tar.gz' \
+              --pattern 'checksums.txt' \
+              --dir "staging/$TARGET" \
+              --clobber
+            ls -la "staging/$TARGET/" | sed 's/^/      /'
+            echo "::endgroup::"
 
-          # Sanity-check: we expect exactly the four {darwin,linux}×{amd64,arm64}
-          # tarballs plus checksums.txt. Anything else means GoReleaser's
-          # archive matrix changed and the formula template below would
-          # render an incomplete/incorrect formula. Fail loudly so the
-          # release isn't published broken.
-          for combo in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
-            if ! ls staging/galtea_*_${combo}.tar.gz >/dev/null 2>&1; then
-              echo "::error::Missing tarball for $combo on $TARGET"
+            # Sanity-check: we expect exactly the four {darwin,linux}×{amd64,arm64}
+            # tarballs plus checksums.txt. Anything else means GoReleaser's
+            # archive matrix changed and the formula template below would
+            # render an incomplete/incorrect formula. Fail loudly so the
+            # release isn't published broken.
+            for combo in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+              if ! ls "staging/$TARGET"/galtea_*_${combo}.tar.gz >/dev/null 2>&1; then
+                echo "::error::Missing tarball for $combo on $TARGET"
+                exit 1
+              fi
+            done
+            if [ ! -s "staging/$TARGET/checksums.txt" ]; then
+              echo "::error::checksums.txt missing or empty on $TARGET"
               exit 1
             fi
           done
-          if [ ! -s staging/checksums.txt ]; then
-            echo "::error::checksums.txt missing or empty on $TARGET"
-            exit 1
-          fi
 
       - name: 🪣 Publish bottles to a GitHub Release of this repo
         if: steps.target.outputs.already_published != 'true'
@@ -200,8 +204,8 @@ jobs:
           # MONOREPO_READ_TOKEN here — that one only has read access to
           # the source monorepo.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET: ${{ steps.target.outputs.target }}
-          VERSION: ${{ steps.target.outputs.version }}
+          MIRROR: ${{ steps.target.outputs.mirror }}
+          LATEST: ${{ steps.target.outputs.latest }}
         run: |
           set -euo pipefail
           # Bottles live as assets on a GitHub Release of THIS repo
@@ -214,34 +218,41 @@ jobs:
           # or v4.24.6) for traceability. See ADR cli/adr/0019.
           OWNER_REPO="${GITHUB_REPOSITORY:-Galtea-AI/homebrew-tap}"
 
-          echo "::group::🪣 Publishing 4 bottles as assets on $OWNER_REPO@$TARGET"
-          if gh release view "$TARGET" -R "$OWNER_REPO" >/dev/null 2>&1; then
-            echo "  • Release $TARGET already exists — clobbering its 4 bottle assets"
-            gh release upload "$TARGET" -R "$OWNER_REPO" \
-              --clobber \
-              staging/galtea_*_darwin_*.tar.gz \
-              staging/galtea_*_linux_*.tar.gz
-          else
-            echo "  • Creating release $TARGET on $OWNER_REPO"
-            NOTES_FILE=$(mktemp)
-            cat > "$NOTES_FILE" <<MD
+          for TARGET in $MIRROR; do
+            VERSION="${TARGET#v}"
+            echo "::group::🪣 Publishing 4 bottles as assets on $OWNER_REPO@$TARGET"
+            if gh release view "$TARGET" -R "$OWNER_REPO" >/dev/null 2>&1; then
+              echo "  • Release $TARGET already exists — clobbering its 4 bottle assets"
+              gh release upload "$TARGET" -R "$OWNER_REPO" \
+                --clobber \
+                "staging/$TARGET"/galtea_*_darwin_*.tar.gz \
+                "staging/$TARGET"/galtea_*_linux_*.tar.gz
+            else
+              echo "  • Creating release $TARGET on $OWNER_REPO"
+              NOTES_FILE=$(mktemp)
+              cat > "$NOTES_FILE" <<MD
           Automated mirror of Galtea CLI bottles for Homebrew.
 
           Source release: [Galtea-AI/monorepo@$TARGET](https://github.com/Galtea-AI/monorepo/releases/tag/$TARGET) (private).
 
-          These tarballs are the GoReleaser-produced \`galtea_${VERSION}_<os>_<arch>.tar.gz\` archives, mirrored here so \`brew install\` can fetch them publicly. The Homebrew formula in \`Formula/galtea.rb\` references them by URL + SHA256.
+          These tarballs are the GoReleaser-produced \`galtea_${VERSION}_<os>_<arch>.tar.gz\` archives, mirrored here so \`brew install\` can fetch them publicly. The Homebrew formulas in \`Formula/\` reference them by URL + SHA256.
 
           Do not edit this release manually — \`.github/workflows/sync.yml\` regenerates it on every CLI release on the source monorepo.
           MD
-            gh release create "$TARGET" -R "$OWNER_REPO" \
-              --title "galtea $TARGET" \
-              --notes-file "$NOTES_FILE" \
-              staging/galtea_*_darwin_*.tar.gz \
-              staging/galtea_*_linux_*.tar.gz
-            rm -f "$NOTES_FILE"
-          fi
-          echo "  ✔  Bottles published: https://github.com/$OWNER_REPO/releases/tag/$TARGET"
-          echo "::endgroup::"
+              # A backport created after a higher release must not become this repo's "Latest".
+              IS_LATEST=false
+              [ "$TARGET" != "$LATEST" ] || IS_LATEST=true
+              gh release create "$TARGET" -R "$OWNER_REPO" \
+                --title "galtea $TARGET" \
+                --notes-file "$NOTES_FILE" \
+                --latest="$IS_LATEST" \
+                "staging/$TARGET"/galtea_*_darwin_*.tar.gz \
+                "staging/$TARGET"/galtea_*_linux_*.tar.gz
+              rm -f "$NOTES_FILE"
+            fi
+            echo "  ✔  Bottles published: https://github.com/$OWNER_REPO/releases/tag/$TARGET"
+            echo "::endgroup::"
+          done
 
       - name: 📝 Render Formula/galtea.rb and one Formula/galtea@<major>.<minor>.rb per minor
         if: steps.target.outputs.already_published != 'true'
@@ -249,7 +260,7 @@ jobs:
           # This repo's releases are public; the monorepo's checksums.txt needs the read token.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MONOREPO_TOKEN: ${{ secrets.MONOREPO_READ_TOKEN }}
-          TARGET: ${{ steps.target.outputs.target }}
+          TARGET: ${{ steps.target.outputs.latest }}
           OWNER_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -294,11 +305,11 @@ jobs:
       - name: 📌 Update .ingested-tags
         if: steps.target.outputs.already_published != 'true'
         env:
-          TARGET: ${{ steps.target.outputs.target }}
+          TARGET: ${{ steps.target.outputs.latest }}
         run: |
           # Single-line manifest — overwrite, not append. It is an
           # idempotency anchor: incremental runs read it to skip when
-          # Formula/galtea.rb already points at the latest release.
+          # Formula/galtea.rb already points at the highest release.
           echo "$TARGET" > .ingested-tags
           echo "::group::📌 .ingested-tags now"
           sed 's/^/      /' .ingested-tags
@@ -324,8 +335,9 @@ jobs:
 
           MODE="${{ steps.target.outputs.mode }}"
           EMOJI="${{ steps.target.outputs.emoji }}"
-          TARGET="${{ steps.target.outputs.target }}"
-          MSG="$EMOJI sync($MODE): galtea $TARGET"
+          LATEST="${{ steps.target.outputs.latest }}"
+          MIRROR="${{ steps.target.outputs.mirror }}"
+          MSG="$EMOJI sync($MODE): galtea $LATEST${MIRROR:+, mirrored $MIRROR}"
 
           echo "::group::📊 Diff summary"
           git diff --cached --stat | tail -20 | sed 's/^/      /'
@@ -345,8 +357,8 @@ jobs:
         env:
           MODE: ${{ steps.target.outputs.mode }}
           EMOJI: ${{ steps.target.outputs.emoji }}
-          TARGET: ${{ steps.target.outputs.target }}
-          VERSION: ${{ steps.target.outputs.version }}
+          LATEST: ${{ steps.target.outputs.latest }}
+          MIRROR: ${{ steps.target.outputs.mirror }}
           SKIPPED: ${{ steps.target.outputs.already_published }}
           PUSHED: ${{ steps.commit.outputs.pushed }}
           OWNER_REPO: ${{ github.repository }}
@@ -357,10 +369,10 @@ jobs:
             echo "| Field | Value |"
             echo "|-------|-------|"
             echo "| Mode | \`${MODE:-no-op}\` |"
-            echo "| Target | \`${TARGET:-<none>}\` |"
-            echo "| Version | \`${VERSION:-<none>}\` |"
+            echo "| Formula/galtea.rb | \`${LATEST:-<none>}\` |"
+            echo "| Mirrored | \`${MIRROR:-<none>}\` |"
             echo "| Already published | \`${SKIPPED:-false}\` |"
             echo "| Formula commit pushed | \`${PUSHED:-false}\` |"
-            echo "| Bottles release | <https://github.com/${OWNER_REPO}/releases/tag/${TARGET:-<none>}> |"
+            echo "| Bottles release | <https://github.com/${OWNER_REPO}/releases/tag/${LATEST:-<none>}> |"
             echo "| Tap landing | <https://brew.galtea.ai> |"
           } >> "$GITHUB_STEP_SUMMARY"
