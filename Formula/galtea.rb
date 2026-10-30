@@ -8,6 +8,28 @@ class Galtea < Formula
   version "5.13.0"
   license "Apache-2.0"
 
+  conflicts_with "galtea@4.24", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.25", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.26", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.27", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.30", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.32", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.33", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.34", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.36", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.38", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.40", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.41", because: "both install a `galtea` binary"
+  conflicts_with "galtea@4.42", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.0", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.2", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.4", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.6", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.8", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.9", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.12", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.13", because: "both install a `galtea` binary"
+
   on_macos do
     if Hardware::CPU.intel?
       url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.13.0/galtea_5.13.0_darwin_amd64.tar.gz"
