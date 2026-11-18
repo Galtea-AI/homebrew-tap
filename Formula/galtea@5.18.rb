@@ -34,6 +34,7 @@ class GalteaAT518 < Formula
   conflicts_with "galtea@5.15", because: "both install a `galtea` binary"
   conflicts_with "galtea@5.16", because: "both install a `galtea` binary"
   conflicts_with "galtea@5.17", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.19", because: "both install a `galtea` binary"
 
   on_macos do
     if Hardware::CPU.intel?
