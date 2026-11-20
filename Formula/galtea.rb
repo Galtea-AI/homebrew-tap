@@ -5,7 +5,7 @@
 class Galtea < Formula
   desc "Galtea CLI - terminal-native client for the Galtea AI testing & evaluation platform"
   homepage "https://galtea.ai"
-  version "5.19.0"
+  version "5.20.0"
   license "Apache-2.0"
 
   conflicts_with "galtea@4.24", because: "both install a `galtea` binary"
@@ -35,19 +35,20 @@ class Galtea < Formula
   conflicts_with "galtea@5.17", because: "both install a `galtea` binary"
   conflicts_with "galtea@5.18", because: "both install a `galtea` binary"
   conflicts_with "galtea@5.19", because: "both install a `galtea` binary"
+  conflicts_with "galtea@5.20", because: "both install a `galtea` binary"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.19.0/galtea_5.19.0_darwin_amd64.tar.gz"
-      sha256 "9472dc89ef7bea7998d8eacabb6c6e69b107c2eedc85d8991d95d08cb830308b"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.20.0/galtea_5.20.0_darwin_amd64.tar.gz"
+      sha256 "3ad76f653ae1652940e700dae907ba52e9dfabe5c354653ba1b547e2b54709f6"
 
       def install
         bin.install "galtea"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.19.0/galtea_5.19.0_darwin_arm64.tar.gz"
-      sha256 "fbd6c1f123cabeaac812a15c4379bd85a630e0e632e6421f51abd9dc52d107b3"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.20.0/galtea_5.20.0_darwin_arm64.tar.gz"
+      sha256 "59875484bd1f55cb6c1f8f8a2882e496abbb3236ac8d31c78a3224f8cb5fa802"
 
       def install
         bin.install "galtea"
@@ -57,16 +58,16 @@ class Galtea < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.19.0/galtea_5.19.0_linux_amd64.tar.gz"
-      sha256 "a674f73976916cff15a01736578226053f8e9f3b95b8bbbe4cd49ae3bc48a267"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.20.0/galtea_5.20.0_linux_amd64.tar.gz"
+      sha256 "7ac0b0b4fc2bf2c02530295fc379f0be65ac95a10716f36392234abffbfbb1ef"
 
       def install
         bin.install "galtea"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.19.0/galtea_5.19.0_linux_arm64.tar.gz"
-      sha256 "0f56f7d4702a4c24c8d5901b0b20e99469056ed173460a7f925ed4356fe1cd2d"
+      url "https://github.com/Galtea-AI/homebrew-tap/releases/download/5.20.0/galtea_5.20.0_linux_arm64.tar.gz"
+      sha256 "077747b1c9733835e2a52f9429195f510d6424bc1a273fc5ceb4147fd0e28ce8"
 
       def install
         bin.install "galtea"
